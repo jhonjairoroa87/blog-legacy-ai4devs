@@ -78,6 +78,11 @@ async function comentarioPorId(id: number) {
   return db.from('comentarios').where('id', id).first()
 }
 
+async function cuerpoGuardado(id: number) {
+  const fila = await comentarioPorId(id)
+  return fila.cuerpo
+}
+
 test.group('POST /posts/:slug/comentarios — caracterización', (group) => {
   group.each.setup(() => testUtils.db().withGlobalTransaction())
 
@@ -221,6 +226,21 @@ test.group('POST /posts/:slug/comentarios — caracterización', (group) => {
     assert.deepEqual(respuesta.body(), { error: 'El nombre es obligatorio' })
   })
 
+  test('nombre falso pero no nulo (0) devuelve 400 con error', async ({ client, assert }) => {
+    // Arrange
+    await db.table('posts').insert(unPost())
+
+    // Act
+    const respuesta = await client
+      .post('/posts/post-de-prueba/comentarios')
+      .json(unEnvio({ autor_nombre: 0 }))
+
+    // Assert
+    respuesta.assertStatus(400)
+    assert.deepEqual(respuesta.body(), { error: 'El nombre es obligatorio' })
+    assert.lengthOf(await comentariosDelPost(9001), 0)
+  })
+
   test('BUG (H15): sin correo devuelve 422 con message', async ({ client, assert }) => {
     // Arrange
     await db.table('posts').insert(unPost())
@@ -265,10 +285,7 @@ test.group('POST /posts/:slug/comentarios — caracterización', (group) => {
     assert.deepEqual(respuesta.body(), { error: 'El nombre es obligatorio' })
   })
 
-  test('correo sin arroba y cuerpo corto: gana el error del correo', async ({
-    client,
-    assert,
-  }) => {
+  test('correo sin arroba y cuerpo corto: gana el error del correo', async ({ client, assert }) => {
     // Arrange
     await db.table('posts').insert(unPost())
 
@@ -339,10 +356,7 @@ test.group('DELETE /comentarios/:id — caracterización', (group) => {
     assert.isNull(await comentarioPorId(9101))
   })
 
-  test('BUG (H2): borra un comentario aprobado con solo el correo', async ({
-    client,
-    assert,
-  }) => {
+  test('BUG (H2): borra un comentario aprobado con solo el correo', async ({ client, assert }) => {
     // Arrange
     await db.table('posts').insert(unPost())
     await db.table('comentarios').insert(unComentario({ estado: 'aprobado' }))
@@ -463,10 +477,7 @@ test.group('DELETE /comentarios/:id — caracterización', (group) => {
     assert.deepEqual(respuesta.body(), { error: 'Comentario no encontrado' })
   })
 
-  test('borra comentarios de un post en borrador (no mira el post)', async ({
-    client,
-    assert,
-  }) => {
+  test('borra comentarios de un post en borrador (no mira el post)', async ({ client, assert }) => {
     // Arrange
     await db.table('posts').insert(unPost({ estado: 'borrador' }))
     await db.table('comentarios').insert(unComentario())
@@ -481,10 +492,7 @@ test.group('DELETE /comentarios/:id — caracterización', (group) => {
     assert.deepEqual(respuesta.body(), { borrado: true })
   })
 
-  test('BUG (H11): borrar un padre deja sus respuestas en la tabla', async ({
-    client,
-    assert,
-  }) => {
+  test('BUG (H11): borrar un padre deja sus respuestas en la tabla', async ({ client, assert }) => {
     // Arrange
     await db.table('posts').insert(unPost())
     await db.table('comentarios').insert(unComentario())
@@ -536,7 +544,7 @@ test.group('PATCH /comentarios/:id — caracterización', (group) => {
       creado_en: '2026-01-02 09:00:00',
       padre_id: null,
     })
-    assert.strictEqual((await comentarioPorId(9101)).cuerpo, 'Texto corregido.')
+    assert.strictEqual(await cuerpoGuardado(9101), 'Texto corregido.')
   })
 
   test('BUG (H16): acepta un cuerpo de 1 carácter', async ({ client, assert }) => {
@@ -567,7 +575,7 @@ test.group('PATCH /comentarios/:id — caracterización', (group) => {
     // Assert
     respuesta.assertStatus(400)
     assert.deepEqual(respuesta.body(), { error: 'Falta el cuerpo' })
-    assert.strictEqual((await comentarioPorId(9101)).cuerpo, 'Un comentario de prueba.')
+    assert.strictEqual(await cuerpoGuardado(9101), 'Un comentario de prueba.')
   })
 
   test('BUG (H14): el correo con otras mayúsculas no sirve para editar (403)', async ({
@@ -586,7 +594,7 @@ test.group('PATCH /comentarios/:id — caracterización', (group) => {
     // Assert
     respuesta.assertStatus(403)
     assert.deepEqual(respuesta.body(), { error: 'No puedes editar este comentario' })
-    assert.strictEqual((await comentarioPorId(9101)).cuerpo, 'Un comentario de prueba.')
+    assert.strictEqual(await cuerpoGuardado(9101), 'Un comentario de prueba.')
   })
 
   test('BUG (H14): la clave de moderación no sirve para editar (403)', async ({
@@ -621,7 +629,7 @@ test.group('PATCH /comentarios/:id — caracterización', (group) => {
     // Assert
     respuesta.assertStatus(403)
     assert.deepEqual(respuesta.body(), { error: 'No puedes editar este comentario' })
-    assert.strictEqual((await comentarioPorId(9101)).cuerpo, 'Un comentario de prueba.')
+    assert.strictEqual(await cuerpoGuardado(9101), 'Un comentario de prueba.')
   })
 
   test('correo ajeno y sin cuerpo: la autorización va antes que la validación', async ({
@@ -651,5 +659,23 @@ test.group('PATCH /comentarios/:id — caracterización', (group) => {
     // Assert
     respuesta.assertStatus(404)
     assert.deepEqual(respuesta.body(), { error: 'Comentario no encontrado' })
+  })
+
+  test('BUG (H23): un creado_en nulo sale como null en la respuesta', async ({
+    client,
+    assert,
+  }) => {
+    // Arrange
+    await db.table('posts').insert(unPost())
+    await db.table('comentarios').insert(unComentario({ creado_en: null }))
+
+    // Act
+    const respuesta = await client
+      .patch('/comentarios/9101')
+      .json({ autor_email: 'lucia.ferrer@ejemplo.es', cuerpo: 'Texto corregido.' })
+
+    // Assert
+    respuesta.assertStatus(200)
+    assert.isNull(respuesta.body().comentario.creado_en)
   })
 })
